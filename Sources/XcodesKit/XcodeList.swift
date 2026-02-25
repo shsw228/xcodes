@@ -141,31 +141,73 @@ extension XcodeList {
         return firstly { () -> Promise<(data: Data, response: URLResponse)> in
             Current.network.dataTask(with: URLRequest(url: URL(string: "https://xcodereleases.com/data.json")!))
         }
-        .map { (data, response) in
-            let decoder = JSONDecoder()
-            let xcReleasesXcodes = try decoder.decode([XCModel.Xcode].self, from: data)
-            let xcodes = xcReleasesXcodes.compactMap { xcReleasesXcode -> Xcode? in
-                guard
-                    let downloadURL = xcReleasesXcode.links?.download?.url,
-                    let version = Version(xcReleasesXcode: xcReleasesXcode)
-                else { return nil }
-                
-                let releaseDate = Calendar(identifier: .gregorian).date(from: DateComponents(
-                    year: xcReleasesXcode.date.year,
-                    month: xcReleasesXcode.date.month,
-                    day: xcReleasesXcode.date.day
-                ))
-                
-                return Xcode(
-                    version: version,
-                    url: downloadURL,
-                    filename: String(downloadURL.path.suffix(fromLast: "/")),
-                    releaseDate: releaseDate
-                )
-            }
-            return xcodes
+        .map { (data, _) in
+            try self.parseXcodeReleases(from: data)
         }
         .map(filterPrereleasesThatMatchReleaseBuildMetadataIdentifiers)
+    }
+
+    func parseXcodeReleases(from data: Data) throws -> [Xcode] {
+        let decoder = JSONDecoder()
+        let xcReleasesXcodes = try decoder.decode([TolerantXcodeReleasesXcode].self, from: data)
+        return xcReleasesXcodes.compactMap { xcReleasesXcode in
+            guard
+                let downloadURL = xcReleasesXcode.links?.download?.url,
+                let version = versionFromXcodeReleases(xcReleasesXcode)
+            else { return nil }
+
+            let releaseDate = Calendar(identifier: .gregorian).date(from: DateComponents(
+                year: xcReleasesXcode.date.year,
+                month: xcReleasesXcode.date.month,
+                day: xcReleasesXcode.date.day
+            ))
+
+            return Xcode(
+                version: version,
+                url: downloadURL,
+                filename: String(downloadURL.path.suffix(fromLast: "/")),
+                releaseDate: releaseDate
+            )
+        }
+    }
+
+    private func versionFromXcodeReleases(_ xcode: TolerantXcodeReleasesXcode) -> Version? {
+        var versionString = xcode.version.number ?? ""
+        let components = versionString.components(separatedBy: ".")
+        versionString += Array(repeating: ".0", count: max(0, 3 - components.count)).joined()
+
+        switch xcode.version.release {
+        case let .beta(beta):
+            versionString += "-Beta"
+            if beta > 1 {
+                versionString += ".\(beta)"
+            }
+        case let .dp(dp):
+            versionString += "-DP"
+            if dp > 1 {
+                versionString += ".\(dp)"
+            }
+        case .gm:
+            versionString += "-GM"
+        case let .gmSeed(gmSeed):
+            versionString += "-GM.Seed"
+            if gmSeed > 1 {
+                versionString += ".\(gmSeed)"
+            }
+        case let .rc(rc):
+            versionString += "-Release.Candidate"
+            if rc > 1 {
+                versionString += ".\(rc)"
+            }
+        case .release, .unknown:
+            break
+        }
+
+        if let buildNumber = xcode.version.build {
+            versionString += "+\(buildNumber)"
+        }
+
+        return Version(versionString)
     }
     
     /// Xcode Releases may have multiple releases with the same build metadata when a build doesn't change between candidate and final releases.
@@ -191,4 +233,89 @@ extension XcodeList {
         }
         return filteredXcodes
     } 
+}
+
+private struct TolerantXcodeReleasesXcode: Decodable {
+    let version: TolerantXcodeReleasesVersion
+    let date: TolerantXcodeReleasesDate
+    let links: TolerantXcodeReleasesLinks?
+}
+
+private struct TolerantXcodeReleasesVersion: Decodable {
+    let number: String?
+    let build: String?
+    let release: TolerantXcodeReleasesRelease
+}
+
+private struct TolerantXcodeReleasesDate: Decodable {
+    let year: Int
+    let month: Int
+    let day: Int
+}
+
+private struct TolerantXcodeReleasesLinks: Decodable {
+    let download: TolerantXcodeReleasesLink?
+}
+
+private struct TolerantXcodeReleasesLink: Decodable {
+    let url: URL
+}
+
+private enum TolerantXcodeReleasesRelease: Decodable {
+    case gm
+    case gmSeed(Int)
+    case rc(Int)
+    case beta(Int)
+    case dp(Int)
+    case release
+    case unknown
+
+    private enum CodingKeys: String, CodingKey {
+        case gm
+        case gmSeed
+        case rc
+        case beta
+        case dp
+        case release
+    }
+
+    init(from decoder: Decoder) throws {
+        if let container = try? decoder.container(keyedBy: CodingKeys.self) {
+            if let value = try container.decodeIfPresent(Bool.self, forKey: .gm), value {
+                self = .gm
+                return
+            }
+            if let value = Self.decodeInt(container, key: .gmSeed) {
+                self = .gmSeed(value)
+                return
+            }
+            if let value = Self.decodeInt(container, key: .rc) {
+                self = .rc(value)
+                return
+            }
+            if let value = Self.decodeInt(container, key: .beta) {
+                self = .beta(value)
+                return
+            }
+            if let value = Self.decodeInt(container, key: .dp) {
+                self = .dp(value)
+                return
+            }
+            if let value = try container.decodeIfPresent(Bool.self, forKey: .release), value {
+                self = .release
+                return
+            }
+        }
+        self = .unknown
+    }
+
+    private static func decodeInt(_ container: KeyedDecodingContainer<CodingKeys>, key: CodingKeys) -> Int? {
+        if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+            return value
+        }
+        if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+            return Int(value)
+        }
+        return nil
+    }
 }
