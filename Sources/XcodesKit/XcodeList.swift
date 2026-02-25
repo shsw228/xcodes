@@ -141,38 +141,30 @@ extension XcodeList {
         return firstly { () -> Promise<(data: Data, response: URLResponse)> in
             Current.network.dataTask(with: URLRequest(url: URL(string: "https://xcodereleases.com/data.json")!))
         }
-        .map { (data, response) in
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-            let preview = String(data: data.prefix(512), encoding: .utf8) ?? "<non-utf8>"
-            Current.logging.log("[xcodeReleases] status=\(statusCode) bytes=\(data.count)")
-            Current.logging.log("[xcodeReleases] body-preview=\(preview.replacingOccurrences(of: "\n", with: "\\n"))")
-            return try self.parseXcodeReleases(from: data)
+        .map { (data, _) in
+            let decoder = JSONDecoder()
+            let xcReleasesXcodes = try decoder.decode([TolerantXcodeReleasesXcode].self, from: data)
+            return xcReleasesXcodes.compactMap { xcReleasesXcode in
+                guard
+                    let downloadURL = xcReleasesXcode.links?.download?.url,
+                    let version = self.versionFromXcodeReleases(xcReleasesXcode)
+                else { return nil }
+
+                let releaseDate = Calendar(identifier: .gregorian).date(from: DateComponents(
+                    year: xcReleasesXcode.date.year,
+                    month: xcReleasesXcode.date.month,
+                    day: xcReleasesXcode.date.day
+                ))
+
+                return Xcode(
+                    version: version,
+                    url: downloadURL,
+                    filename: String(downloadURL.path.suffix(fromLast: "/")),
+                    releaseDate: releaseDate
+                )
+            }
         }
         .map(filterPrereleasesThatMatchReleaseBuildMetadataIdentifiers)
-    }
-
-    func parseXcodeReleases(from data: Data) throws -> [Xcode] {
-        let decoder = JSONDecoder()
-        let xcReleasesXcodes = try decoder.decode([TolerantXcodeReleasesXcode].self, from: data)
-        return xcReleasesXcodes.compactMap { xcReleasesXcode in
-            guard
-                let downloadURL = xcReleasesXcode.links?.download?.url,
-                let version = versionFromXcodeReleases(xcReleasesXcode)
-            else { return nil }
-
-            let releaseDate = Calendar(identifier: .gregorian).date(from: DateComponents(
-                year: xcReleasesXcode.date.year,
-                month: xcReleasesXcode.date.month,
-                day: xcReleasesXcode.date.day
-            ))
-
-            return Xcode(
-                version: version,
-                url: downloadURL,
-                filename: String(downloadURL.path.suffix(fromLast: "/")),
-                releaseDate: releaseDate
-            )
-        }
     }
 
     private func versionFromXcodeReleases(_ xcode: TolerantXcodeReleasesXcode) -> Version? {
