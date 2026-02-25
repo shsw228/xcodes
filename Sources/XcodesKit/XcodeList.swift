@@ -141,8 +141,12 @@ extension XcodeList {
         return firstly { () -> Promise<(data: Data, response: URLResponse)> in
             Current.network.dataTask(with: URLRequest(url: URL(string: "https://xcodereleases.com/data.json")!))
         }
-        .map { (data, _) in
-            try self.parseXcodeReleases(from: data)
+        .map { (data, response) in
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let preview = String(data: data.prefix(512), encoding: .utf8) ?? "<non-utf8>"
+            Current.logging.log("[xcodeReleases] status=\(statusCode) bytes=\(data.count)")
+            Current.logging.log("[xcodeReleases] body-preview=\(preview.replacingOccurrences(of: "\n", with: "\\n"))")
+            return try self.parseXcodeReleases(from: data)
         }
         .map(filterPrereleasesThatMatchReleaseBuildMetadataIdentifiers)
     }
@@ -215,24 +219,47 @@ extension XcodeList {
     /// We don't care about that difference, so only keep the final release (GM or Release, in XCModel terms).
     /// The downside of this is that a user could technically have both releases installed, and so they won't both be shown in the list, but I think most users wouldn't do this.
     func filterPrereleasesThatMatchReleaseBuildMetadataIdentifiers(_ xcodes: [Xcode]) -> [Xcode] {
-        var filteredXcodes: [Xcode] = []
-        for xcode in xcodes {
-            if xcode.version.buildMetadataIdentifiers.isEmpty {
-                filteredXcodes.append(xcode)
-                continue
+        // 1) De-dup same-build RC/beta vs final release.
+        let releaseDeduplicated = Dictionary(grouping: xcodes, by: \.version.buildMetadataIdentifiers)
+            .values
+            .flatMap { group -> [Xcode] in
+                if group.count <= 1 {
+                    return group
+                }
+
+                let finalReleases = group.filter {
+                    $0.version.prereleaseIdentifiers.isEmpty || $0.version.prereleaseIdentifiers == ["GM"]
+                }
+                return finalReleases.isEmpty ? group : finalReleases
             }
-            
-            let xcodesWithSameBuildMetadataIdentifiers = xcodes
-                .filter({ $0.version.buildMetadataIdentifiers == xcode.version.buildMetadataIdentifiers })
-            if xcodesWithSameBuildMetadataIdentifiers.count > 1,
-               xcode.version.prereleaseIdentifiers.isEmpty || xcode.version.prereleaseIdentifiers == ["GM"] {
-                filteredXcodes.append(xcode)
-            } else if xcodesWithSameBuildMetadataIdentifiers.count == 1 {
-                filteredXcodes.append(xcode)
-            }
-        }
-        return filteredXcodes
+
+        // 2) De-dup distribution variants (Universal vs Apple Silicon) for the same version.
+        return Dictionary(grouping: releaseDeduplicated, by: { $0.version.description })
+            .values
+            .map(selectPreferredDistribution)
     } 
+
+    private func selectPreferredDistribution(_ group: [Xcode]) -> Xcode {
+        guard group.count > 1 else { return group[0] }
+
+        func rank(_ xcode: Xcode) -> Int {
+            let name = xcode.filename.lowercased()
+            let isAppleSilicon = name.contains("apple_silicon") || name.contains("apple-silicon")
+            let isUniversal = name.contains("universal")
+
+            #if arch(arm64)
+            if isAppleSilicon { return 0 }
+            if isUniversal { return 1 }
+            #else
+            if isUniversal { return 0 }
+            if name.contains("x86_64") { return 1 }
+            if isAppleSilicon { return 2 }
+            #endif
+            return 3
+        }
+
+        return group.min(by: { rank($0) < rank($1) }) ?? group[0]
+    }
 }
 
 private struct TolerantXcodeReleasesXcode: Decodable {

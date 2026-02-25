@@ -128,8 +128,12 @@
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
+            argument = "list"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
             argument = "runtimes install &quot;visionOS 26.0-beta3 arm64&quot;"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
             argument = "runtimes --include-betas"
@@ -141,7 +145,7 @@
          </CommandLineArgument>
          <CommandLineArgument
             argument = "update"
-            isEnabled = "NO">
+            isEnabled = "YES">
          </CommandLineArgument>
       </CommandLineArguments>
    </LaunchAction>
