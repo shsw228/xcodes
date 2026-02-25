@@ -144,7 +144,7 @@ extension XcodeList {
         .map { (data, _) in
             let decoder = JSONDecoder()
             let xcReleasesXcodes = try decoder.decode([TolerantXcodeReleasesXcode].self, from: data)
-            return xcReleasesXcodes.compactMap { xcReleasesXcode in
+            let xcodes: [Xcode] = xcReleasesXcodes.compactMap { xcReleasesXcode in
                 guard
                     let downloadURL = xcReleasesXcode.links?.download?.url,
                     let version = self.versionFromXcodeReleases(xcReleasesXcode)
@@ -163,6 +163,7 @@ extension XcodeList {
                     releaseDate: releaseDate
                 )
             }
+            return xcodes
         }
         .map(filterPrereleasesThatMatchReleaseBuildMetadataIdentifiers)
     }
